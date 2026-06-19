@@ -4,8 +4,7 @@ output "webhook_url" {
 }
 
 output "lambda_function_name" {
-  description = "Lambda function name."
-  value       = module.api_lambda.lambda_function_name
+  value = module.api_lambda.lambda_function_name
 }
 
 output "cloudwatch_log_group_name" {

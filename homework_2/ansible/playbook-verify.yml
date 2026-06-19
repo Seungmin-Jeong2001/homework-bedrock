@@ -28,9 +28,10 @@
         outputs: "{{ tf_outputs.stdout | from_json }}"
 
     - name: Verify Lambda exists
-      ansible.builtin.command: "aws lambda get-function --function-name {{ outputs.lambda_function_name.value }}"
-      environment: "{{ aws_cli_environment }}"
-      changed_when: false
+      ansible.builtin.command: >
+        aws lambda get-function
+        --function-name codebuddy-orchestrator
+        --region {{ aws_region.stdout }}
 
     - name: Verify OpenSearch collections
       ansible.builtin.command: aws opensearchserverless list-collections

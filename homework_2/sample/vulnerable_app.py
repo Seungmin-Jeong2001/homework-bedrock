@@ -26,4 +26,8 @@ def get_user(id):
     query = f"SELECT * FROM users WHERE id = {id}"
     return execute(query)
 
-dwdwd
+def execute(query):
+    # Imagine this function executes the query and returns results
+    pass
+
+나는 코딩인간입니다

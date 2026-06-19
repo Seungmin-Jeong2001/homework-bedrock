@@ -20,3 +20,10 @@ def calculate_discount(total, is_admin):
 def read_user_file(path):
     with open(path) as file:
         return file.read()
+
+
+def get_user(id):
+    query = f"SELECT * FROM users WHERE id = {id}"
+    return execute(query)
+
+dwdwd

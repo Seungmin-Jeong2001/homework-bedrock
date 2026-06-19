@@ -1,0 +1,369 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CodeBuddy PDF practice implementation with Bedrock Agent, Knowledge Base, and OpenSearch Serverless.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: codebuddy
+  FoundationModel:
+    Type: String
+    Default: anthropic.claude-3-haiku-20240307-v1:0
+  EmbeddingModelId:
+    Type: String
+    Default: amazon.titan-embed-text-v2:0
+    Description: Bedrock embedding model ID available in the CloudFormation stack region.
+  GitHubToken:
+    Type: String
+    NoEcho: true
+  GitHubWebhookSecret:
+    Type: String
+    NoEcho: true
+  SlackWebhookUrl:
+    Type: String
+    NoEcho: true
+    Default: ""
+  DisableWebhookSecretVerify:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+  MaxDiffChars:
+    Type: Number
+    Default: 12000
+  S3KnowledgeBucketArn:
+    Type: String
+    Description: S3 bucket ARN containing reference documents for the Knowledge Base.
+  LambdaArtifactBucket:
+    Type: String
+    Description: S3 bucket containing the packaged Lambda zip.
+  LambdaArtifactKey:
+    Type: String
+    Default: build/lambda.zip
+    Description: S3 key for the packaged Lambda zip.
+  IndexLambdaArtifactKey:
+    Type: String
+    Default: build/opensearch_index.zip
+    Description: S3 key for the OpenSearch Serverless index custom resource Lambda zip.
+  VectorIndexName:
+    Type: String
+    Default: codebuddy-index
+    Description: OpenSearch Serverless vector index name for the Knowledge Base.
+  VectorDimension:
+    Type: Number
+    Default: 1024
+    Description: Titan Text Embeddings V2 vector dimension.
+
+Resources:
+  CodeBuddyCollectionEncryptionPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub "${ProjectName}-kb-encryption"
+      Type: encryption
+      Policy: !Sub >-
+        {"Rules":[{"ResourceType":"collection","Resource":["collection/${ProjectName}-kb"]}],"AWSOwnedKey":true}
+
+  CodeBuddyCollectionNetworkPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub "${ProjectName}-kb-network"
+      Type: network
+      Policy: !Sub >-
+        [{"Rules":[{"ResourceType":"collection","Resource":["collection/${ProjectName}-kb"]},{"ResourceType":"dashboard","Resource":["collection/${ProjectName}-kb"]}],"AllowFromPublic":true}]
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-orchestrator-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-orchestrator-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeAgent
+                Resource: "*"
+
+  OpenSearchIndexCreatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-index-creator-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-index-creator-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource: "*"
+
+  BedrockKnowledgeBaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-kb-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-kb-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Ref S3KnowledgeBucketArn
+                  - !Sub "${S3KnowledgeBucketArn}/*"
+              - Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource: "*"
+
+  CodeBuddyCollectionAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Properties:
+      Name: !Sub "${ProjectName}-kb-access"
+      Type: data
+      Policy: !Sub
+        - >-
+          [{"Rules":[{"ResourceType":"collection","Resource":["collection/${CollectionName}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]},{"ResourceType":"index","Resource":["index/${CollectionName}/${VectorIndexName}"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}],"Principal":["${KnowledgeBaseRoleArn}","${IndexCreatorRoleArn}"]}]
+        - CollectionName: !Sub "${ProjectName}-kb"
+          VectorIndexName: !Ref VectorIndexName
+          KnowledgeBaseRoleArn: !GetAtt BedrockKnowledgeBaseRole.Arn
+          IndexCreatorRoleArn: !GetAtt OpenSearchIndexCreatorRole.Arn
+
+  CodeBuddyVectorCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    DependsOn:
+      - CodeBuddyCollectionEncryptionPolicy
+      - CodeBuddyCollectionNetworkPolicy
+      - CodeBuddyCollectionAccessPolicy
+    Properties:
+      Name: !Sub "${ProjectName}-kb"
+      Type: VECTORSEARCH
+      Description: Vector store for the Bedrock Knowledge Base.
+
+  OpenSearchIndexCreatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-opensearch-index-creator"
+      Runtime: python3.12
+      Handler: create_opensearch_index.lambda_handler
+      Role: !GetAtt OpenSearchIndexCreatorRole.Arn
+      Timeout: 180
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaArtifactBucket
+        S3Key: !Ref IndexLambdaArtifactKey
+
+  CodeBuddyVectorIndex:
+    Type: Custom::OpenSearchServerlessVectorIndex
+    DependsOn:
+      - CodeBuddyVectorCollection
+      - CodeBuddyCollectionNetworkPolicy
+      - CodeBuddyCollectionAccessPolicy
+    Properties:
+      ServiceToken: !GetAtt OpenSearchIndexCreatorFunction.Arn
+      CollectionEndpoint: !GetAtt CodeBuddyVectorCollection.CollectionEndpoint
+      IndexName: !Ref VectorIndexName
+      VectorDimension: !Ref VectorDimension
+
+  BedrockAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-agent-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-agent-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - bedrock:Retrieve
+                Resource: "*"
+
+  CodeBuddyKnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    DependsOn:
+      - CodeBuddyVectorIndex
+    Properties:
+      Name: !Sub "${ProjectName}-knowledge-base"
+      RoleArn: !GetAtt BedrockKnowledgeBaseRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}"
+      StorageConfiguration:
+        Type: OPENSEARCH_SERVERLESS
+        OpensearchServerlessConfiguration:
+          CollectionArn: !GetAtt CodeBuddyVectorCollection.Arn
+          VectorIndexName: !Ref VectorIndexName
+          FieldMapping:
+            VectorField: vector
+            TextField: text
+            MetadataField: metadata
+
+  CodeBuddyDataSource:
+    Type: AWS::Bedrock::DataSource
+    DependsOn:
+      - CodeBuddyKnowledgeBase
+    Properties:
+      Name: !Sub "${ProjectName}-s3-documents"
+      KnowledgeBaseId: !Ref CodeBuddyKnowledgeBase
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !Ref S3KnowledgeBucketArn
+
+  CodeBuddyAgent:
+    Type: AWS::Bedrock::Agent
+    DependsOn:
+      - CodeBuddyKnowledgeBase
+    Properties:
+      AgentName: !Sub "${ProjectName}-pr-review-agent"
+      AgentResourceRoleArn: !GetAtt BedrockAgentRole.Arn
+      FoundationModel: !Ref FoundationModel
+      AutoPrepare: true
+      Instruction: >-
+        You are CodeBuddy, a senior GitHub pull request reviewer. Review code changes
+        for correctness, security, reliability, and test gaps. Use the attached
+        Knowledge Base when helpful and respond in concise Korean Markdown.
+      KnowledgeBases:
+        - KnowledgeBaseId: !Ref CodeBuddyKnowledgeBase
+          Description: Reference documents for secure pull request review.
+          KnowledgeBaseState: ENABLED
+
+  CodeBuddyAgentAlias:
+    Type: AWS::Bedrock::AgentAlias
+    DependsOn:
+      - CodeBuddyAgent
+    Properties:
+      AgentId: !Ref CodeBuddyAgent
+      AgentAliasName: live
+
+  OrchestratorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-orchestrator"
+      Runtime: python3.12
+      Handler: orchestrator.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaArtifactBucket
+        S3Key: !Ref LambdaArtifactKey
+      Environment:
+        Variables:
+          BEDROCK_AGENT_ID: !Ref CodeBuddyAgent
+          BEDROCK_AGENT_ALIAS_ID: !GetAtt CodeBuddyAgentAlias.AgentAliasId
+          ENABLE_DIRECT_INVOKE_MODEL: "false"
+          GITHUB_TOKEN: !Ref GitHubToken
+          GITHUB_WEBHOOK_SECRET: !Ref GitHubWebhookSecret
+          SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
+          DISABLE_WEBHOOK_SECRET_VERIFY: !Ref DisableWebhookSecretVerify
+          MAX_DIFF_CHARS: !Ref MaxDiffChars
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${ProjectName}-http-api"
+      ProtocolType: HTTP
+
+  LambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt OrchestratorFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  WebhookRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /github/webhook
+      Target: !Sub "integrations/${LambdaIntegration}"
+
+  HealthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /
+      Target: !Sub "integrations/${LambdaIntegration}"
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OrchestratorFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*"
+
+Outputs:
+  WebhookUrl:
+    Description: GitHub Webhook Payload URL.
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/github/webhook"
+  AgentId:
+    Value: !Ref CodeBuddyAgent
+  AgentAliasId:
+    Value: !GetAtt CodeBuddyAgentAlias.AgentAliasId
+  KnowledgeBaseId:
+    Value: !Ref CodeBuddyKnowledgeBase
+  OpenSearchServerlessCollectionArn:
+    Value: !GetAtt CodeBuddyVectorCollection.Arn

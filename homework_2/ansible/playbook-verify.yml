@@ -1,0 +1,67 @@
+---
+- name: Verify CodeBuddy Agent deployment
+  hosts: local
+  connection: local
+  gather_facts: false
+  vars:
+    project_root: "{{ playbook_dir }}/.."
+    terraform_dir: "{{ project_root }}/terraform"
+    aws_profile: "{{ lookup('env', 'AWS_PROFILE') | default('', true) }}"
+    aws_cli_environment: "{{ {'AWS_DEFAULT_REGION': aws_region.stdout} | combine((aws_profile | length > 0) | ternary({'AWS_PROFILE': aws_profile}, {})) }}"
+  tasks:
+    - name: Read AWS region
+      ansible.builtin.command: terraform output -raw aws_region
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: aws_region
+      changed_when: false
+
+    - name: Read Terraform outputs
+      ansible.builtin.command: terraform output -json
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: tf_outputs
+      changed_when: false
+
+    - name: Set output facts
+      ansible.builtin.set_fact:
+        outputs: "{{ tf_outputs.stdout | from_json }}"
+
+    - name: Verify Lambda exists
+      ansible.builtin.command: "aws lambda get-function --function-name {{ outputs.lambda_function_name.value }}"
+      environment: "{{ aws_cli_environment }}"
+      changed_when: false
+
+    - name: Verify OpenSearch collections
+      ansible.builtin.command: aws opensearchserverless list-collections
+      environment: "{{ aws_cli_environment }}"
+      changed_when: false
+
+    - name: Verify OpenSearch index exists
+      ansible.builtin.command: >-
+        python3 {{ project_root }}/scripts/create_opensearch_index.py
+        --endpoint {{ outputs.opensearch_collection_endpoint.value }}
+        --index-name codebuddy-index
+        --dimension 1024
+        --region {{ aws_region.stdout }}
+        {{ (aws_profile | length > 0) | ternary('--profile ' ~ aws_profile, '') }}
+      args:
+        chdir: "{{ project_root }}"
+      changed_when: false
+
+    - name: Verify Knowledge Base output
+      ansible.builtin.assert:
+        that:
+          - outputs.knowledge_base_id.value | length > 0
+          - outputs.bedrock_agent_id.value | length > 0
+          - outputs.bedrock_agent_alias_id.value | length > 0
+
+    - name: Print verification outputs
+      ansible.builtin.debug:
+        msg:
+          - "Webhook URL: {{ outputs.webhook_url.value }}"
+          - "Lambda: {{ outputs.lambda_function_name.value }}"
+          - "OpenSearch endpoint: {{ outputs.opensearch_collection_endpoint.value }}"
+          - "Knowledge Base ID: {{ outputs.knowledge_base_id.value }}"
+          - "Bedrock Agent ID: {{ outputs.bedrock_agent_id.value }}"
+          - "Bedrock Agent Alias ID: {{ outputs.bedrock_agent_alias_id.value }}"

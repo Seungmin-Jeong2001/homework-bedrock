@@ -1,0 +1,47 @@
+{
+    "accessPolicyDetail": {
+        "type": "data",
+        "name": "codebuddy-kb-access",
+        "policyVersion": "MTc4MTg4MTk2NzgxNV8x",
+        "policy": [
+            {
+                "Rules": [
+                    {
+                        "Permission": [
+                            "aoss:CreateCollectionItems",
+                            "aoss:DeleteCollectionItems",
+                            "aoss:UpdateCollectionItems",
+                            "aoss:DescribeCollectionItems"
+                        ],
+                        "Resource": [
+                            "collection/codebuddy-kb"
+                        ],
+                        "ResourceType": "collection"
+                    },
+                    {
+                        "Permission": [
+                            "aoss:CreateIndex",
+                            "aoss:DeleteIndex",
+                            "aoss:UpdateIndex",
+                            "aoss:DescribeIndex",
+                            "aoss:ReadDocument",
+                            "aoss:WriteDocument"
+                        ],
+                        "Resource": [
+                            "index/codebuddy-kb/*"
+                        ],
+                        "ResourceType": "index"
+                    }
+                ],
+                "Principal": [
+                    "arn:aws:iam::051986612197:user/dev_account",
+                    "arn:aws:iam::051986612197:role/codebuddy-kb-role",
+                    "arn:aws:iam::051986612197:role/codebuddy-index-creator-role"
+                ],
+                "Description": "CodeBuddy OpenSearch Serverless data access policy"
+            }
+        ],
+        "createdDate": 1781881967815,
+        "lastModifiedDate": 1781881967815
+    }
+}

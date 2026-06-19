@@ -1,0 +1,100 @@
+---
+- name: Deploy CodeBuddy Agent with Terraform and Ansible
+  hosts: local
+  connection: local
+  gather_facts: false
+  vars:
+    project_root: "{{ playbook_dir }}/.."
+    terraform_dir: "{{ project_root }}/terraform"
+    aws_profile: "{{ lookup('env', 'AWS_PROFILE') | default('', true) }}"
+  tasks:
+    - name: Package Lambda
+      ansible.builtin.command: "{{ project_root }}/scripts/package_lambda.sh"
+      args:
+        chdir: "{{ project_root }}"
+      changed_when: true
+
+    - name: Terraform init
+      ansible.builtin.command: terraform init
+      args:
+        chdir: "{{ terraform_dir }}"
+      changed_when: false
+
+    - name: Terraform apply foundation stage
+      ansible.builtin.command: terraform apply -auto-approve -var deployment_stage=foundation
+      args:
+        chdir: "{{ terraform_dir }}"
+      changed_when: true
+
+    - name: Read OpenSearch endpoint
+      ansible.builtin.command: terraform output -raw opensearch_collection_endpoint
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: opensearch_endpoint
+      changed_when: false
+
+    - name: Read OpenSearch collection name
+      ansible.builtin.command: terraform output -raw opensearch_collection_name
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: opensearch_collection_name
+      changed_when: false
+
+    - name: Read OpenSearch access policy name
+      ansible.builtin.command: terraform output -raw opensearch_access_policy_name
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: opensearch_access_policy_name
+      changed_when: false
+
+    - name: Read AWS region
+      ansible.builtin.command: terraform output -raw aws_region
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: aws_region
+      changed_when: false
+
+    - name: Show current AWS caller identity
+      ansible.builtin.command: aws sts get-caller-identity
+      environment: "{{ (aws_profile | length > 0) | ternary({'AWS_PROFILE': aws_profile, 'AWS_DEFAULT_REGION': aws_region.stdout}, {'AWS_DEFAULT_REGION': aws_region.stdout}) }}"
+      register: caller_identity
+      changed_when: false
+
+    - name: Print OpenSearch access policy debug info
+      ansible.builtin.debug:
+        msg:
+          - "Current AWS caller identity: {{ caller_identity.stdout }}"
+          - "OpenSearch collection name: {{ opensearch_collection_name.stdout }}"
+          - "OpenSearch access policy name: {{ opensearch_access_policy_name.stdout }}"
+          - "The caller ARN from aws sts get-caller-identity must be included in the OpenSearch Serverless data access policy Principal."
+
+    - name: Create OpenSearch vector index
+      ansible.builtin.command: >-
+        python3 {{ project_root }}/scripts/create_opensearch_index.py
+        --endpoint {{ opensearch_endpoint.stdout }}
+        --index-name codebuddy-index
+        --dimension 1024
+        --region {{ aws_region.stdout }}
+        {{ (aws_profile | length > 0) | ternary('--profile ' ~ aws_profile, '') }}
+      args:
+        chdir: "{{ project_root }}"
+      changed_when: true
+
+    - name: Terraform apply full stage
+      ansible.builtin.command: terraform apply -auto-approve -var deployment_stage=full
+      args:
+        chdir: "{{ terraform_dir }}"
+      changed_when: true
+
+    - name: Read webhook URL
+      ansible.builtin.command: terraform output -raw webhook_url
+      args:
+        chdir: "{{ terraform_dir }}"
+      register: webhook_url
+      changed_when: false
+
+    - name: Print deployment result
+      ansible.builtin.debug:
+        msg:
+          - "GitHub Webhook Payload URL: {{ webhook_url.stdout }}"
+          - "OpenSearch endpoint: {{ opensearch_endpoint.stdout }}"

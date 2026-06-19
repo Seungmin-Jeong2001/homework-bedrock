@@ -1,0 +1,21 @@
+aws_region  = "ap-northeast-2"
+aws_profile = "default"
+
+project_name     = "codebuddy"
+deployment_stage = "full"
+lambda_zip_path  = "../build/lambda.zip"
+
+foundation_model   = "anthropic.claude-3-haiku-20240307-v1:0"
+embedding_model_id = "amazon.titan-embed-text-v2:0"
+
+s3_knowledge_bucket_arn = "arn:aws:s3:::"
+
+github_token          = ""
+slack_webhook_url     = ""
+github_webhook_secret = ""
+
+disable_webhook_secret_verify = false
+max_diff_chars                = 12000
+vector_index_name             = "codebuddy-index"
+vector_dimension              = 1024
+opensearch_admin_principal_arn = ""

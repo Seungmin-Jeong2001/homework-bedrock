@@ -1,0 +1,22 @@
+---
+- name: Destroy CodeBuddy Agent deployment
+  hosts: local
+  connection: local
+  gather_facts: false
+  vars:
+    project_root: "{{ playbook_dir }}/.."
+    terraform_dir: "{{ project_root }}/terraform"
+  tasks:
+    - name: Terraform destroy
+      ansible.builtin.command: terraform destroy -auto-approve
+      args:
+        chdir: "{{ terraform_dir }}"
+      changed_when: true
+
+    - name: Show remaining resource check guidance
+      ansible.builtin.debug:
+        msg:
+          - "aws opensearchserverless list-collections --region ap-northeast-2"
+          - "aws bedrock-agent list-knowledge-bases --region ap-northeast-2"
+          - "aws bedrock-agent list-agents --region ap-northeast-2"
+          - "aws logs describe-log-groups --log-group-name-prefix /aws/lambda/codebuddy-orchestrator --region ap-northeast-2"

@@ -1,0 +1,4 @@
+aws_region: ap-northeast-2
+aws_profile: default
+terraform_dir: ../terraform
+lambda_zip_path: ../build/lambda.zip

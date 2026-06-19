@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+import boto3
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+
+
+FORBIDDEN_HINT = (
+    "OpenSearch Serverless 403 Forbidden: 현재 AWS principal이 data access policy의 Principal에 "
+    "포함되어 있는지 확인하세요. aws sts get-caller-identity로 ARN을 확인하고, "
+    "Terraform access policy Principal에 추가해야 합니다. IAM policy에 aoss:APIAccessAll도 필요합니다."
+)
+
+
+def normalize_endpoint(endpoint):
+    if endpoint.startswith("https://"):
+        return endpoint.rstrip("/")
+    return f"https://{endpoint.rstrip('/')}"
+
+
+def mapping(dimension):
+    return {
+        "settings": {"index": {"knn": True}},
+        "mappings": {
+            "properties": {
+                "vector": {
+                    "type": "knn_vector",
+                    "dimension": dimension,
+                    "method": {"name": "hnsw", "engine": "faiss", "space_type": "l2"},
+                },
+                "text": {"type": "text"},
+                "metadata": {"type": "text", "index": False},
+            }
+        },
+    }
+
+
+def signed_request(method, url, region, body=None, profile=None):
+    payload = body.encode("utf-8") if isinstance(body, str) else body
+    session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+    credentials = session.get_credentials().get_frozen_credentials()
+    headers = {"host": urllib.parse.urlparse(url).netloc}
+    if payload:
+        headers["content-type"] = "application/json"
+
+    aws_request = AWSRequest(method=method, url=url, data=payload, headers=headers)
+    SigV4Auth(credentials, "aoss", region).add_auth(aws_request)
+    prepared = aws_request.prepare()
+    request = urllib.request.Request(prepared.url, data=payload, headers=dict(prepared.headers), method=method)
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        return 0, str(exc)
+
+
+def ensure_index(endpoint, index_name, region, dimension, profile):
+    endpoint = normalize_endpoint(endpoint)
+    index_url = f"{endpoint}/{index_name}"
+    body = json.dumps(mapping(dimension))
+    last_status = None
+    last_response = None
+
+    for attempt in range(1, 25):
+        status, response = signed_request("HEAD", index_url, region, profile=profile)
+        if status == 200:
+            print(f"Index already exists: {index_name}")
+            return
+
+        status, response = signed_request("PUT", index_url, region, body=body, profile=profile)
+        if status in (200, 201):
+            print(f"Index create accepted: {index_name}")
+            break
+        if status == 400 and "resource_already_exists_exception" in response:
+            print(f"Index already exists: {index_name}")
+            break
+
+        last_status = status
+        last_response = response
+        if status == 403:
+            print(FORBIDDEN_HINT)
+        print(f"Waiting for collection/access policy readiness. attempt={attempt} status={status} response={response}")
+        time.sleep(5)
+    else:
+        if last_status == 403:
+            raise SystemExit(f"Failed to create index {index_name}: 403 Forbidden\n{FORBIDDEN_HINT}")
+        raise SystemExit(f"Failed to create index {index_name}: {last_status} {last_response}")
+
+    for attempt in range(1, 25):
+        status, response = signed_request("HEAD", index_url, region, profile=profile)
+        if status == 200:
+            print(f"Index is ready: {index_name}")
+            return
+        print(f"Waiting for index visibility. attempt={attempt} status={status} response={response}")
+        time.sleep(5)
+
+    raise SystemExit(f"Index {index_name} was not visible after retries")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--endpoint", required=True)
+    parser.add_argument("--index-name", default="codebuddy-index")
+    parser.add_argument("--region", default="ap-northeast-2")
+    parser.add_argument("--dimension", type=int, default=1024)
+    parser.add_argument("--profile", default="")
+    args = parser.parse_args()
+    ensure_index(args.endpoint, args.index_name, args.region, args.dimension, args.profile or None)
+
+
+if __name__ == "__main__":
+    main()

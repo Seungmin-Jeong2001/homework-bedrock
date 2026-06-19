@@ -1,0 +1,14 @@
+{
+  "action": "opened",
+  "repository": {
+    "name": "demo-repo",
+    "owner": {
+      "login": "octocat"
+    }
+  },
+  "pull_request": {
+    "number": 7,
+    "html_url": "https://github.com/octocat/demo-repo/pull/7",
+    "diff_url": "https://github.com/octocat/demo-repo/pull/7.diff"
+  }
+}
